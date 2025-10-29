@@ -4,9 +4,57 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta
-from typing import Dict, Iterable, List, Sequence
+from typing import Dict, Iterable, List, Mapping, Sequence
+
+try:  # Optional dependency: pandas is not required for core operation.
+    import pandas as pd
+except ModuleNotFoundError:  # pragma: no cover - pandas optional
+    pd = None  # type: ignore
 
 from .data_contracts import WatchEvent
+
+
+def _ensure_watch_events(
+    events: Sequence[WatchEvent] | Iterable[Mapping[str, object]]
+) -> List[WatchEvent]:
+    """Normalize heterogeneous inputs into validated ``WatchEvent`` records."""
+
+    if isinstance(events, Sequence) and all(isinstance(event, WatchEvent) for event in events):
+        return list(events)
+
+    if pd is not None and isinstance(events, pd.DataFrame):  # pragma: no cover - optional path
+        frame = events.copy()
+        frame["event_time"] = pd.to_datetime(frame["event_time"], utc=True)
+        records = frame.to_dict("records")
+        return _ensure_watch_events(records)
+
+    normalized: List[WatchEvent] = []
+    for record in events:
+        if isinstance(record, WatchEvent):
+            normalized.append(record)
+            continue
+        if not isinstance(record, Mapping):
+            raise TypeError(
+                "events must be WatchEvent instances, mappings, or a pandas.DataFrame"
+            )
+        event_time = record.get("event_time")
+        if isinstance(event_time, datetime):
+            parsed_time = event_time
+        elif event_time is None:
+            raise ValueError("event_time is required")
+        else:
+            parsed_time = datetime.fromisoformat(str(event_time).replace("Z", "+00:00"))
+        normalized.append(
+            WatchEvent(
+                user_id=str(record["user_id"]),
+                video_id=str(record["video_id"]),
+                creator_id=str(record["creator_id"]),
+                event_time=parsed_time,
+                watched_seconds=float(record["watched_seconds"]),
+                video_duration=float(record["video_duration"]),
+            )
+        )
+    return normalized
 
 
 @dataclass(frozen=True)
@@ -59,14 +107,19 @@ class DailyActiveCount:
     active_users: int
 
 
-def sessionize_events(events: Sequence[WatchEvent], session_gap_minutes: int = 30) -> List[SessionizedEvent]:
+def sessionize_events(
+    events: Sequence[WatchEvent] | Iterable[Mapping[str, object]],
+    session_gap_minutes: int = 30,
+) -> List[SessionizedEvent]:
     """Assign session identifiers to chronologically ordered events."""
 
-    if not events:
+    normalized = _ensure_watch_events(events)
+
+    if not normalized:
         return []
 
     gap = timedelta(minutes=session_gap_minutes)
-    sorted_events = sorted(events, key=lambda event: (event.user_id, event.event_time))
+    sorted_events = sorted(normalized, key=lambda event: (event.user_id, event.event_time))
 
     session_counters: Dict[str, int] = {}
     last_event_time: Dict[str, datetime] = {}
@@ -106,7 +159,9 @@ def sessionize_events(events: Sequence[WatchEvent], session_gap_minutes: int = 3
     return enriched
 
 
-def aggregate_sessions(sessionized_events: Sequence[SessionizedEvent]) -> List[SessionSummary]:
+def aggregate_sessions(
+    sessionized_events: Sequence[SessionizedEvent],
+) -> List[SessionSummary]:
     """Summarize session-level metrics from sessionized events."""
 
     if not sessionized_events:
@@ -146,13 +201,18 @@ def aggregate_sessions(sessionized_events: Sequence[SessionizedEvent]) -> List[S
     return summaries
 
 
-def retention_curve(events: Sequence[WatchEvent], days: Sequence[int] = (1, 7, 30)) -> List[RetentionPoint]:
+def retention_curve(
+    events: Sequence[WatchEvent] | Iterable[Mapping[str, object]],
+    days: Sequence[int] = (1, 7, 30),
+) -> List[RetentionPoint]:
     """Compute retention rates for specified day offsets relative to first watch."""
 
-    if not events:
+    normalized = _ensure_watch_events(events)
+
+    if not normalized:
         return [RetentionPoint(day=day, retention_rate=0.0) for day in days]
 
-    sessionized = sessionize_events(events)
+    sessionized = sessionize_events(normalized)
     first_watch: Dict[str, date] = {}
     watch_days_by_user: Dict[str, set[date]] = {}
     for event in sessionized:
@@ -174,14 +234,18 @@ def retention_curve(events: Sequence[WatchEvent], days: Sequence[int] = (1, 7, 3
     return rates
 
 
-def creator_watch_share(events: Sequence[WatchEvent]) -> List[CreatorWatchShare]:
+def creator_watch_share(
+    events: Sequence[WatchEvent] | Iterable[Mapping[str, object]]
+) -> List[CreatorWatchShare]:
     """Share of watch seconds attributed to each creator."""
 
-    if not events:
+    normalized = _ensure_watch_events(events)
+
+    if not normalized:
         return []
 
     totals: Dict[str, float] = {}
-    for event in events:
+    for event in normalized:
         totals[event.creator_id] = totals.get(event.creator_id, 0.0) + event.watched_seconds
     total_watch = sum(totals.values())
     shares = [
@@ -196,14 +260,18 @@ def creator_watch_share(events: Sequence[WatchEvent]) -> List[CreatorWatchShare]
     return shares
 
 
-def daily_active_users(events: Sequence[WatchEvent]) -> List[DailyActiveCount]:
+def daily_active_users(
+    events: Sequence[WatchEvent] | Iterable[Mapping[str, object]]
+) -> List[DailyActiveCount]:
     """Daily active users derived from watch events."""
 
-    if not events:
+    normalized = _ensure_watch_events(events)
+
+    if not normalized:
         return []
 
     active: Dict[date, set[str]] = {}
-    for event in events:
+    for event in normalized:
         day = event.event_time.date()
         active.setdefault(day, set()).add(event.user_id)
     counts = [DailyActiveCount(date=day, active_users=len(users)) for day, users in active.items()]

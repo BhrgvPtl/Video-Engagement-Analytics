@@ -36,6 +36,29 @@ class FeatureEngineeringTests(TestCase):
         u1_sessions = {event.session_id for event in sessionized if event.user_id == "u1"}
         self.assertEqual({"u1-1"}, u1_sessions)
 
+    def test_sessionize_events_accepts_mapping_payloads(self) -> None:
+        payloads = [
+            {
+                "user_id": "u1",
+                "video_id": "v1",
+                "creator_id": "c1",
+                "event_time": "2024-03-01T00:00:00Z",
+                "watched_seconds": 30,
+                "video_duration": 60,
+            },
+            {
+                "user_id": "u1",
+                "video_id": "v2",
+                "creator_id": "c2",
+                "event_time": "2024-03-01T00:20:00+00:00",
+                "watched_seconds": 45,
+                "video_duration": 60,
+            },
+        ]
+        sessionized = features.sessionize_events(payloads, session_gap_minutes=15)
+        self.assertEqual(2, len(sessionized))
+        self.assertEqual({"u1"}, {event.user_id for event in sessionized})
+
     def test_retention_curve_returns_expected_days(self) -> None:
         events = sample_events()
         curve = features.retention_curve(events, days=(1, 7))
