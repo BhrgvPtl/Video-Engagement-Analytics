@@ -1,13 +1,13 @@
 .PHONY: install build run test
 
 install:
-	poetry install
+@echo "Dependencies rely on the Python standard library."
 
 build:
-	poetry run python -m src.utils
+python -m src.utils
 
 run:
-	poetry run streamlit run dashboards/streamlit_app.py --server.port=8501
+@echo "Launch the Streamlit dashboard after installing optional dependencies."
 
 test:
-	poetry run pytest
+python -m unittest discover -s tests

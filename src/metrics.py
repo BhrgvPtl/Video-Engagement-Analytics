@@ -2,64 +2,81 @@
 
 from __future__ import annotations
 
-from typing import Dict, Sequence
+from datetime import timedelta
+from typing import Dict, List, Sequence
 
-import pandas as pd
+from .data_contracts import WatchEvent
+from .features import (
+    CreatorWatchShare,
+    DailyActiveCount,
+    SessionSummary,
+    creator_watch_share,
+    daily_active_users,
+)
 
 
-def completion_rate(events: pd.DataFrame) -> float:
+def completion_rate(events: Sequence[WatchEvent]) -> float:
     """Average completion rate across all watch events."""
 
-    if events.empty:
+    if not events:
         return 0.0
-    ratios = (events["watched_seconds"] / events["video_duration"]).clip(0, 1)
-    return float(ratios.mean())
+    ratios = [min(event.watched_seconds / event.video_duration, 1.0) for event in events]
+    return sum(ratios) / len(ratios)
 
 
-def drop_off_positions(events: pd.DataFrame, thresholds: Sequence[float] = (0.25, 0.5, 0.75)) -> Dict[str, float]:
+def drop_off_positions(
+    events: Sequence[WatchEvent], thresholds: Sequence[float] = (0.25, 0.5, 0.75)
+) -> Dict[str, float]:
     """Share of plays that drop before each completion threshold."""
 
-    if events.empty:
+    if not events:
         return {f"below_{int(th * 100)}": 0.0 for th in thresholds}
 
-    ratios = (events["watched_seconds"] / events["video_duration"]).clip(0, 1)
-    return {f"below_{int(th * 100)}": float((ratios < th).mean()) for th in thresholds}
+    ratios = [min(event.watched_seconds / event.video_duration, 1.0) for event in events]
+    result: Dict[str, float] = {}
+    for threshold in thresholds:
+        result[f"below_{int(threshold * 100)}"] = sum(1 for ratio in ratios if ratio < threshold) / len(ratios)
+    return result
 
 
-def average_session_duration(session_summary: pd.DataFrame) -> float:
+def average_session_duration(session_summary: Sequence[SessionSummary]) -> float:
     """Mean session duration in minutes."""
 
-    if session_summary.empty:
+    if not session_summary:
         return 0.0
-    return float(session_summary["session_duration_minutes"].mean())
+    return sum(summary.session_duration_minutes for summary in session_summary) / len(session_summary)
 
 
-def dau_wau_ratio(events: pd.DataFrame) -> Dict[str, float]:
+def dau_wau_ratio(events: Sequence[WatchEvent]) -> Dict[str, float]:
     """Daily active over weekly active user ratio for the most recent day."""
 
-    if events.empty:
+    if not events:
         return {"dau": 0.0, "wau": 0.0, "ratio": 0.0}
 
-    df = events.copy()
-    df["event_time"] = pd.to_datetime(df["event_time"])
-    df["watch_day"] = df["event_time"].dt.floor("D")
-    latest_day = df["watch_day"].max()
-    dau = df.loc[df["watch_day"] == latest_day, "user_id"].nunique()
-    wau_window_start = latest_day - pd.Timedelta(days=6)
-    wau = df.loc[(df["watch_day"] >= wau_window_start) & (df["watch_day"] <= latest_day), "user_id"].nunique()
-    ratio = dau / wau if wau else 0.0
-    return {"dau": float(dau), "wau": float(wau), "ratio": float(ratio)}
+    active_counts = daily_active_users(events)
+    if not active_counts:
+        return {"dau": 0.0, "wau": 0.0, "ratio": 0.0}
+
+    latest_day = active_counts[-1].date
+    dau_entry = next(
+        (entry for entry in active_counts if entry.date == latest_day),
+        DailyActiveCount(latest_day, 0),
+    )
+
+    wau_window_start = latest_day - timedelta(days=6)
+    wau_users: set[str] = set()
+    for event in events:
+        day = event.event_time.date()
+        if wau_window_start <= day <= latest_day:
+            wau_users.add(event.user_id)
+
+    wau = len(wau_users)
+    ratio = dau_entry.active_users / wau if wau else 0.0
+    return {"dau": float(dau_entry.active_users), "wau": float(wau), "ratio": float(ratio)}
 
 
-def creator_contribution(events: pd.DataFrame, top_n: int = 3) -> pd.DataFrame:
+def creator_contribution(events: Sequence[WatchEvent], top_n: int = 3) -> List[CreatorWatchShare]:
     """Watch-share contribution for top creators."""
 
-    if events.empty:
-        return pd.DataFrame(columns=["creator_id", "watch_seconds", "watch_share"])
-
-    totals = (
-        events.groupby("creator_id", as_index=False)["watched_seconds"].sum().rename(columns={"watched_seconds": "watch_seconds"})
-    )
-    total_watch = totals["watch_seconds"].sum()
-    totals["watch_share"] = totals["watch_seconds"] / total_watch if total_watch else 0.0
-    return totals.sort_values("watch_seconds", ascending=False).head(top_n).reset_index(drop=True)
+    shares = creator_watch_share(events)
+    return shares[:top_n]

@@ -26,15 +26,12 @@ YouTube Trending + Simulated Watch Logs
 ```
 
 ## Getting Started
-1. Create the Poetry environment:
-   ```bash
-   poetry install
-   ```
+1. The analytics toolkit uses the Python standard library, so no dependency installation is required for the core CLI and tests.
 2. Generate processed features from the bundled samples:
    ```bash
    make build
    ```
-3. Launch the Streamlit dashboard:
+3. Launch the Streamlit dashboard (optional, requires installing Streamlit and Plotly):
    ```bash
    make run
    ```

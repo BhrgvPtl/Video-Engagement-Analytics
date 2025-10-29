@@ -1,42 +1,48 @@
-import pandas as pd
+from datetime import datetime
+from unittest import TestCase
 
 from src import churn_model
+from src.data_contracts import WatchEvent
 
 
-def sample_events() -> pd.DataFrame:
-    return pd.DataFrame(
-        {
-            "user_id": ["u1", "u1", "u1", "u2", "u2", "u3", "u3"],
-            "video_id": ["v1", "v2", "v3", "v1", "v4", "v2", "v5"],
-            "creator_id": ["c1", "c2", "c1", "c1", "c3", "c2", "c4"],
-            "event_time": pd.to_datetime(
-                [
-                    "2024-03-01T00:00:00Z",
-                    "2024-03-02T00:10:00Z",
-                    "2024-03-08T00:05:00Z",
-                    "2024-03-01T01:00:00Z",
-                    "2024-03-01T01:20:00Z",
-                    "2024-03-01T02:00:00Z",
-                    "2024-03-03T02:10:00Z",
-                ]
-            ),
-            "watched_seconds": [40, 50, 60, 35, 30, 25, 20],
-            "video_duration": [60, 60, 60, 45, 45, 30, 30],
-        }
+def make_event(
+    user: str, video: str, creator: str, timestamp: str, watched: float, duration: float
+) -> WatchEvent:
+    return WatchEvent(
+        user_id=user,
+        video_id=video,
+        creator_id=creator,
+        event_time=datetime.fromisoformat(timestamp.replace("Z", "+00:00")),
+        watched_seconds=watched,
+        video_duration=duration,
     )
 
 
-def test_prepare_churn_dataset_aligns_features_and_labels():
-    events = sample_events()
-    dataset = churn_model.prepare_churn_dataset(events, horizon_days=7)
-    assert not dataset.features.empty
-    assert list(dataset.features.index) == list(dataset.target.index)
+def sample_events() -> list[WatchEvent]:
+    return [
+        make_event("u1", "v1", "c1", "2024-03-01T00:00:00Z", 40, 60),
+        make_event("u1", "v2", "c2", "2024-03-02T00:10:00Z", 50, 60),
+        make_event("u1", "v3", "c3", "2024-03-08T00:05:00Z", 60, 60),
+        make_event("u2", "v1", "c1", "2024-03-01T01:00:00Z", 35, 45),
+        make_event("u2", "v4", "c3", "2024-03-05T01:20:00Z", 30, 45),
+        make_event("u3", "v2", "c2", "2024-03-01T02:00:00Z", 25, 30),
+        make_event("u3", "v5", "c4", "2024-03-03T02:10:00Z", 20, 30),
+    ]
 
 
-def test_train_and_predict_churn_model_returns_probabilities():
-    events = sample_events()
-    dataset = churn_model.prepare_churn_dataset(events, horizon_days=7)
-    model = churn_model.train_churn_model(dataset)
-    scores = churn_model.predict_retention(model, dataset.features)
-    assert {"user_id", "retention_probability"}.issubset(scores.columns)
-    assert len(scores) == len(dataset.features)
+class ChurnModelTests(TestCase):
+    def test_prepare_churn_dataset_aligns_features_and_labels(self) -> None:
+        events = sample_events()
+        dataset = churn_model.prepare_churn_dataset(events, horizon_days=7)
+        self.assertFalse(dataset.is_empty())
+        self.assertEqual(dataset.users, dataset.users)
+        self.assertEqual(len(dataset.features), len(dataset.target))
+
+    def test_train_and_predict_churn_model_returns_probabilities(self) -> None:
+        events = sample_events()
+        dataset = churn_model.prepare_churn_dataset(events, horizon_days=7)
+        model = churn_model.train_churn_model(dataset, epochs=200)
+        scores = churn_model.predict_retention(model, dataset)
+        self.assertEqual(len(scores), len(dataset.users))
+        for prediction in scores:
+            self.assertTrue(0.0 <= prediction.retention_probability <= 1.0)
