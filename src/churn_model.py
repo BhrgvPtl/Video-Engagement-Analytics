@@ -1,105 +1,86 @@
-"""Churn modeling helpers for short-form video retention analysis."""
+"""Churn modeling utilities for retention forecasting."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Tuple
 
 import pandas as pd
-from sklearn.compose import ColumnTransformer
-from sklearn.ensemble import GradientBoostingClassifier
-from sklearn.metrics import classification_report
-from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.preprocessing import StandardScaler
+
+from . import features
 
 
 @dataclass
-class ChurnModelConfig:
-    """Model hyper-parameters and column definitions."""
-
-    numerical_features: Tuple[str, ...] = (
-        "session_watch_time_seconds",
-        "unique_videos",
-        "completion_rate",
-        "avg_drop_off_percent",
-    )
-    categorical_features: Tuple[str, ...] = ("creator_id",)
-    test_size: float = 0.2
-    random_state: int = 42
+class ChurnDataset:
+    features: pd.DataFrame
+    target: pd.Series
 
 
-def prepare_training_data(path: str) -> pd.DataFrame:
-    """Load processed session features with retention labels."""
+def create_user_features(events: pd.DataFrame, session_gap_minutes: int = 30) -> pd.DataFrame:
+    """Aggregate user-level engagement features for churn modeling."""
 
-    df = pd.read_parquet(path)
-    required_columns = set(
-        ChurnModelConfig().numerical_features
-    ).union(ChurnModelConfig().categorical_features)
-    required_columns.add("retained_d7")
+    sessionized = features.sessionize_events(events, session_gap_minutes=session_gap_minutes)
+    sessions = features.aggregate_sessions(sessionized)
+    if sessions.empty:
+        return pd.DataFrame(columns=["sessions", "avg_session_minutes", "total_watch_seconds", "mean_completion_ratio"])
 
-    missing = required_columns.difference(df.columns)
-    if missing:
-        raise ValueError(f"Missing columns required for churn model: {missing}")
-
-    return df
-
-
-def build_preprocessor(config: ChurnModelConfig) -> ColumnTransformer:
-    """Create preprocessing pipeline."""
-
-    transformers = []
-    if config.numerical_features:
-        transformers.append(
-            (
-                "num",
-                StandardScaler(),
-                list(config.numerical_features),
-            )
+    session_features = (
+        sessions.groupby("user_id")
+        .agg(
+            sessions=("session_id", "nunique"),
+            avg_session_minutes=("session_duration_minutes", "mean"),
+            total_watch_seconds=("session_watch_seconds", "sum"),
+            mean_completion_ratio=("mean_completion_ratio", "mean"),
         )
-    if config.categorical_features:
-        transformers.append(
-            (
-                "cat",
-                OneHotEncoder(handle_unknown="ignore"),
-                list(config.categorical_features),
-            )
-        )
-
-    return ColumnTransformer(transformers=transformers)
-
-
-def train_churn_model(
-    df: pd.DataFrame, config: ChurnModelConfig | None = None
-) -> Tuple[Pipeline, Dict[str, Dict[str, float]]]:
-    """Train a gradient boosting classifier and report metrics."""
-
-    config = config or ChurnModelConfig()
-    X = df[list(config.numerical_features) + list(config.categorical_features)]
-    y = df["retained_d7"]
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X,
-        y,
-        test_size=config.test_size,
-        random_state=config.random_state,
-        stratify=y,
+        .fillna(0.0)
     )
+    return session_features
 
-    model = Pipeline(
-        steps=[
-            ("preprocessor", build_preprocessor(config)),
-            ("classifier", GradientBoostingClassifier(random_state=config.random_state)),
-        ]
-    )
-    model.fit(X_train, y_train)
 
-    predictions = model.predict(X_test)
-    metrics = classification_report(
-        y_test,
-        predictions,
-        output_dict=True,
-        zero_division=0,
-    )
+def label_retention(events: pd.DataFrame, horizon_days: int = 7) -> pd.Series:
+    """Label whether users return on or after the retention horizon."""
 
-    return model, metrics
+    if events.empty:
+        return pd.Series(dtype=int)
+
+    df = features.sessionize_events(events)
+    first_watch = df.groupby("user_id")["watch_day"].min()
+    last_watch = df.groupby("user_id")["watch_day"].max()
+    retained = last_watch >= (first_watch + pd.Timedelta(days=horizon_days))
+    return retained.astype(int).rename("retained")
+
+
+def prepare_churn_dataset(events: pd.DataFrame, horizon_days: int = 7, session_gap_minutes: int = 30) -> ChurnDataset:
+    """Generate aligned features and labels for churn modeling."""
+
+    user_features = create_user_features(events, session_gap_minutes=session_gap_minutes)
+    labels = label_retention(events, horizon_days=horizon_days)
+    aligned = user_features.join(labels, how="inner")
+    target = aligned.pop("retained")
+    return ChurnDataset(features=aligned, target=target)
+
+
+def train_churn_model(dataset: ChurnDataset) -> Pipeline:
+    """Fit a logistic regression churn model."""
+
+    if dataset.features.empty:
+        raise ValueError("Cannot train churn model with no features")
+
+    model = Pipeline([
+        ("scaler", StandardScaler()),
+        ("clf", LogisticRegression(max_iter=1000)),
+    ])
+    model.fit(dataset.features, dataset.target)
+    return model
+
+
+def predict_retention(model: Pipeline, features_df: pd.DataFrame) -> pd.DataFrame:
+    """Return retention probabilities for each user."""
+
+    if features_df.empty:
+        return pd.DataFrame(columns=["user_id", "retention_probability"])
+
+    probabilities = model.predict_proba(features_df)[:, 1]
+    return pd.DataFrame({"user_id": features_df.index, "retention_probability": probabilities})
