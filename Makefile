@@ -1,20 +1,10 @@
-DATA_RAW=data/raw
-DATA_PROC=data/processed
+DATA_RAW := data/raw
+DATA_PROC := data/processed
 
-<<<<<<< Updated upstream
+.PHONY: install build model run clean test
+
 install:
-@echo "Dependencies rely on the Python standard library."
-
-build:
-python -m src.utils
-
-run:
-@echo "Launch the Streamlit dashboard after installing optional dependencies."
-
-test:
-python -m unittest discover -s tests
-=======
-.PHONY: build model run clean
+	@echo "Using requirements.txt; run: pip install -r requirements.txt"
 
 build:
 	python -m src.ingest
@@ -29,6 +19,7 @@ run:
 	streamlit run streamlit_app.py
 
 clean:
-	@if exist $(DATA_PROC) rmdir /S /Q $(DATA_PROC) || true
-	@mkdir $(DATA_PROC) 2>nul || true
->>>>>>> Stashed changes
+	powershell -Command "if (Test-Path '$(DATA_PROC)') { Remove-Item -Recurse -Force '$(DATA_PROC)' }; New-Item -ItemType Directory -Force '$(DATA_PROC)' | Out-Null"
+
+test:
+	@echo "No tests configured"
