@@ -30,8 +30,13 @@ YouTube Trending + Simulated Watch Logs
 2. Generate processed features from the bundled samples:
    ```bash
    make build
+<<<<<<< Updated upstream
    ```
 3. Launch the Streamlit dashboard (optional, requires installing Streamlit and Plotly):
+=======
+   ```  
+3. Launch the Streamlit dashboard:
+>>>>>>> Stashed changes
    ```bash
    make run
    ```

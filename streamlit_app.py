@@ -1,96 +1,164 @@
-"""Streamlit dashboard for short-form video engagement analytics."""
+"""
+Video Engagement Analytics Dashboard
+------------------------------------
+Interactive Streamlit app for exploring engagement, retention, and churn metrics
+based on simulated YouTube short-form video data.
+"""
 
-from __future__ import annotations
-
-from pathlib import Path
-import pandas as pd
 import streamlit as st
-
+import pandas as pd
+import altair as alt
+import os
+# Import from your local src package
+from src.features import (
+    SessionConfig,
+    build_session_features,
+    calculate_kpis,
+    _load_events as load_watch_events,
+)
+from src.metrics import retention_rates
 from src.churn_model import prepare_training_data, train_churn_model
-from src.features import SessionConfig, build_session_features, calculate_kpis, load_watch_events
+from src.utils import path_proc
 
+# -------------------------------------------------------------------
+# Page Configuration
+# -------------------------------------------------------------------
+st.set_page_config(
+    page_title="Short-Form Video Engagement Dashboard",
+    page_icon="🎬",
+    layout="wide",
+)
 
-@st.cache_data(show_spinner=False)
-def load_events(path: Path) -> pd.DataFrame:
-    return load_watch_events(str(path))
+st.title("🎬 Short-Form Video Engagement Analytics Dashboard")
+st.markdown(
+    """
+    This dashboard visualizes engagement patterns, user retention,
+    and churn trends simulated from YouTube short-form video data.
+    """
+)
 
+# -------------------------------------------------------------------
+# Load & Display Data
+# -------------------------------------------------------------------
+st.sidebar.header("📁 Data Controls")
 
-@st.cache_data(show_spinner=False)
-def load_sessions(path: Path, session_config: SessionConfig) -> pd.DataFrame:
-    events = load_events(path)
-    return build_session_features(events, session_config)
+if st.sidebar.button("Rebuild Session Features"):
+    build_session_features(SessionConfig())
 
+events = load_watch_events()
+if events.empty:
+    st.error("No watch events found. Run the data pipeline first (`make build`).")
+    st.stop()
 
-def main() -> None:
-    st.set_page_config(page_title="Reels Retention Command Center", layout="wide")
-    st.title("📈 Short-Form Video Engagement Analytics")
-    st.caption("Meta-aligned KPIs with retention, completion, and creator share insights.")
+# -------------------------------------------------------------------
+# KPI Summary
+# -------------------------------------------------------------------
+kpis = calculate_kpis()
 
-    data_dir = Path("data")
-    raw_events_path = data_dir / "raw" / "watch_events_sample.csv"
-    processed_sessions_path = data_dir / "processed" / "session_features.parquet"
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("🧭 Retention D1", f"{kpis['retention_d1']*100:.1f}%")
+col2.metric("📅 Retention D7", f"{kpis['retention_d7']*100:.1f}%")
+col3.metric("📆 Retention D30", f"{kpis['retention_d30']*100:.1f}%")
+col4.metric("⏱️ Avg Session Time", f"{kpis['avg_session_time']:.1f} sec")
 
-    st.sidebar.header("Data Inputs")
-    st.sidebar.write("Raw events: ", raw_events_path)
-    st.sidebar.write("Processed sessions: ", processed_sessions_path)
+col5, col6, col7, col8 = st.columns(4)
+col5.metric("🎯 Completion Rate", f"{kpis['completion_rate']*100:.1f}%")
+col6.metric("📉 Median Drop-off", f"{kpis['median_dropoff_pct']*100:.1f}%")
+col7.metric("👤 DAU", f"{kpis['dau']:,}")
+col8.metric("👥 WAU", f"{kpis['wau']:,}")
 
-    session_timeout = st.sidebar.slider("Session timeout (minutes)", 5, 60, 30)
-    min_events = st.sidebar.slider("Minimum videos per session", 1, 10, 1)
-    session_config = SessionConfig(
-        session_timeout_minutes=session_timeout,
-        min_events_per_session=min_events,
+st.divider()
+
+# -------------------------------------------------------------------
+# Retention Visualization
+# -------------------------------------------------------------------
+st.subheader("📈 Retention Curve (D1 / D7 / D30)")
+
+ret = retention_rates(events)
+ret_df = pd.DataFrame(
+    {
+        "Day": ["D1", "D7", "D30"],
+        "Retention Rate": [
+            ret.get("d1", 0.0),
+            ret.get("d7", 0.0),
+            ret.get("d30", 0.0),
+        ],
+    }
+)
+chart = (
+    alt.Chart(ret_df)
+    .mark_bar(cornerRadiusTopLeft=6, cornerRadiusTopRight=6, color="#4b8bbe")
+    .encode(
+        x=alt.X("Day:N", title="Retention Window"),
+        y=alt.Y("Retention Rate:Q", axis=alt.Axis(format="%")),
+        tooltip=["Day", alt.Tooltip("Retention Rate:Q", format=".1%")],
     )
+    .properties(height=300)
+)
+st.altair_chart(chart, use_container_width=True)
 
-    if raw_events_path.exists():
-        events = load_events(raw_events_path)
-        st.subheader("Retention KPIs")
-        kpis = calculate_kpis(events)
-        st.metric("DAU (mean)", f"{kpis['dau_mean']:.0f}")
-        st.metric("WAU (mean)", f"{kpis['wau_mean']:.0f}")
-        st.metric("Completion rate", f"{kpis['completion_rate']:.1%}")
-        st.metric("Avg. drop-off", f"{kpis['avg_drop_off_percent']:.1f}%")
+# -------------------------------------------------------------------
+# Engagement Over Time
+# -------------------------------------------------------------------
+st.subheader("⏳ Daily Engagement Activity")
 
-        st.subheader("Watch Distribution")
-        st.dataframe(
-            events.groupby("video_id")[["watch_time_seconds", "completed"]]
-            .agg({"watch_time_seconds": "sum", "completed": "mean"})
-            .sort_values("watch_time_seconds", ascending=False)
-            .head(20)
-        )
+events["event_date"] = pd.to_datetime(events["event_time"], utc=True, errors="coerce").dt.date
+daily_stats = (
+    events.groupby("event_date", as_index=False)
+    .agg(
+        total_watch_seconds=("watch_seconds", "sum"),
+        unique_users=("user_id", "nunique"),
+    )
+    .sort_values("event_date")
+)
+line_chart = (
+    alt.Chart(daily_stats)
+    .transform_fold(
+        ["unique_users", "total_watch_seconds"],
+        as_=["Metric", "Value"]
+    )
+    .mark_line(point=True)
+    .encode(
+        x="event_date:T",
+        y="Value:Q",
+        color="Metric:N",
+        tooltip=["event_date:T", "Metric:N", "Value:Q"],
+    )
+    .properties(height=320)
+)
+st.altair_chart(line_chart, use_container_width=True)
+
+# -------------------------------------------------------------------
+# Churn Model Training
+# -------------------------------------------------------------------
+st.subheader("🤖 Churn Model (Placeholder Training)")
+
+if st.button("Train Logistic Model"):
+    X, y = prepare_training_data()
+    model = train_churn_model(X, y)
+    if model is not None:
+        st.success(f"✅ Model trained with {len(X)} samples and {X.shape[1]} features.")
     else:
-        st.warning("Upload watch_events_sample.csv to data/raw to view KPIs.")
+        st.warning("⚠️ Not enough data or classes to train a model.")
 
-    if processed_sessions_path.exists():
-        if raw_events_path.exists():
-            sessions = load_sessions(raw_events_path, session_config)
-            st.subheader("Session Overview")
-            st.dataframe(
-                sessions[
-                    [
-                        "user_id",
-                        "session_id",
-                        "session_watch_time_seconds",
-                        "unique_videos",
-                        "completion_rate",
-                        "avg_drop_off_percent",
-                    ]
-                ].head(50)
-            )
-        else:
-            st.warning(
-                "Session overview requires raw events in data/raw/watch_events_sample.csv."
-            )
+# -------------------------------------------------------------------
+# Explore Raw / Session Data
+# -------------------------------------------------------------------
+st.divider()
+st.subheader("📊 Explore Data")
 
-        try:
-            training_df = prepare_training_data(str(processed_sessions_path))
-            _, metrics = train_churn_model(training_df)
-            st.subheader("Churn Model Performance")
-            st.json(metrics["weighted avg"])
-        except Exception as exc:  # noqa: BLE001
-            st.error(f"Unable to train churn model: {exc}")
+tab1, tab2, tab3 = st.tabs(["Watch Events", "Session Features", "KPIs JSON"])
+
+with tab1:
+    st.dataframe(events.sample(min(500, len(events))), use_container_width=True)
+
+with tab2:
+    feat_path = path_proc("session_features.parquet")
+    if os.path.exists(feat_path):
+        feats = pd.read_parquet(feat_path)
+        st.dataframe(feats.head(500), use_container_width=True)
     else:
-        st.info("Processed session features not found. Generate them via the feature engine.")
+        st.info("Session features not found. Run the pipeline first.")
 
-
-if __name__ == "__main__":
-    main()
+with tab3:
+    st.json(kpis)

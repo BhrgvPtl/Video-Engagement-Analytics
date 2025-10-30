@@ -1,6 +1,5 @@
-"""Feature engineering utilities for sessionization and retention analysis."""
-
 from __future__ import annotations
+<<<<<<< Updated upstream
 
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta
@@ -12,8 +11,19 @@ except ModuleNotFoundError:  # pragma: no cover - pandas optional
     pd = None  # type: ignore
 
 from .data_contracts import WatchEvent
+=======
+import os
+from dataclasses import dataclass
+import pandas as pd
+from .utils import path_proc
+from .metrics import retention_rates, rolling_active_users
+>>>>>>> Stashed changes
 
+@dataclass
+class SessionConfig:
+    min_session_seconds: int = 10  # placeholder if you later segment sessions more strictly
 
+<<<<<<< Updated upstream
 def _ensure_watch_events(
     events: Sequence[WatchEvent] | Iterable[Mapping[str, object]]
 ) -> List[WatchEvent]:
@@ -199,8 +209,45 @@ def aggregate_sessions(
         )
     summaries.sort(key=lambda summary: (summary.user_id, summary.session_start))
     return summaries
+=======
+def _load_events() -> pd.DataFrame:
+    parq = path_proc("watch_events.parquet")
+    if os.path.exists(parq):
+        df = pd.read_parquet(parq)
+    else:
+        csv = path_proc("../raw/watch_events.csv")  # fallback
+        if not os.path.exists(csv):
+            return pd.DataFrame()
+        df = pd.read_csv(csv, parse_dates=["event_time"])
+    if "event_time" in df.columns:
+        df["event_time"] = pd.to_datetime(df["event_time"], utc=True, errors="coerce")
+    return df
 
+def build_session_features(cfg: SessionConfig = SessionConfig()):
+    events = _load_events()
+    if events.empty:
+        print("[features] no events found. Run simulate_watch first.")
+        return
 
+    # Per-session aggregates
+    grp = events.groupby(["session_id","user_id"], as_index=False)
+    feats = grp.agg(
+        session_start=("event_time","min"),
+        session_end=("event_time","max"),
+        videos_watched=("video_id","count"),
+        total_watch_seconds=("watch_seconds","sum"),
+        avg_watch_pct=("dropoff_position_pct","mean"),
+        completion_rate=("completed","mean"),
+    )
+    feats["session_duration_seconds"] = (feats["session_end"] - feats["session_start"]).dt.total_seconds().astype(int)
+    feats.loc[feats["session_duration_seconds"] < cfg.min_session_seconds, "session_duration_seconds"] = cfg.min_session_seconds
+>>>>>>> Stashed changes
+
+    out = path_proc("session_features.parquet")
+    feats.to_parquet(out, index=False)
+    print(f"[features] wrote {out} ({len(feats):,} sessions)")
+
+<<<<<<< Updated upstream
 def retention_curve(
     events: Sequence[WatchEvent] | Iterable[Mapping[str, object]],
     days: Sequence[int] = (1, 7, 30),
@@ -232,8 +279,47 @@ def retention_curve(
         rate = retained_users / cohort_size if cohort_size else 0.0
         rates.append(RetentionPoint(day=day, retention_rate=rate))
     return rates
+=======
+def calculate_kpis(features_path = None) -> dict:
+    # Load features (optional) and raw events (for DAU/WAU & retention)
+    events = _load_events()
+    if events.empty:
+        return {
+            "retention_d1": 0.0, "retention_d7": 0.0, "retention_d30": 0.0,
+            "avg_session_time": 0.0, "completion_rate": 0.0,
+            "median_dropoff_pct": 0.0, "dau": 0, "wau": 0, "top_creators": []
+        }
 
+    # Optionally load features for session-level stats
+    if features_path is None:
+        features_path = path_proc("session_features.parquet")
+    if os.path.exists(features_path):
+        feats = pd.read_parquet(features_path)
+    else:
+        feats = pd.DataFrame()
 
+    # Retention
+    r = retention_rates(events)
+    # Active users
+    try:
+        events["event_time"] = pd.to_datetime(events["event_time"], utc=True, errors="coerce")
+    except Exception:
+        pass
+    dau = rolling_active_users(events, 1)
+    wau = rolling_active_users(events, 7)
+>>>>>>> Stashed changes
+
+    # Session KPIs
+    if not feats.empty:
+        avg_session_time = float(feats["session_duration_seconds"].mean())
+        completion_rate = float(feats["completion_rate"].mean())
+        median_drop = float(events["dropoff_position_pct"].median())
+    else:
+        avg_session_time = 0.0
+        completion_rate = 0.0
+        median_drop = float(events["dropoff_position_pct"].median()) if "dropoff_position_pct" in events else 0.0
+
+<<<<<<< Updated upstream
 def creator_watch_share(
     events: Sequence[WatchEvent] | Iterable[Mapping[str, object]]
 ) -> List[CreatorWatchShare]:
@@ -283,3 +369,28 @@ def as_dicts(records: Iterable[SessionSummary | RetentionPoint | CreatorWatchSha
     """Serialize dataclass records to dictionaries."""
 
     return [asdict(record) for record in records]
+=======
+    # Top creators by watch time (approximate via total watch_seconds per video→creator)
+    top_creators = []
+    if "video_id" in events.columns:
+        # You can join to videos_clean if you want channel names; for now we leave empty or map later
+        top_creators = []  # leave empty to avoid missing join; fill later if you join to videos table
+
+    return {
+        "retention_d1": float(r.get("d1", 0.0)),
+        "retention_d7": float(r.get("d7", 0.0)),
+        "retention_d30": float(r.get("d30", 0.0)),
+        "avg_session_time": avg_session_time,
+        "completion_rate": completion_rate,
+        "median_dropoff_pct": median_drop,
+        "dau": int(dau),
+        "wau": int(wau),
+        "top_creators": top_creators,
+    }
+
+def main():
+    build_session_features()
+
+if __name__ == "__main__":
+    main()
+>>>>>>> Stashed changes

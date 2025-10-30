@@ -1,6 +1,5 @@
-"""Churn modeling utilities for retention forecasting."""
-
 from __future__ import annotations
+<<<<<<< Updated upstream
 
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -9,8 +8,23 @@ from typing import Dict, Iterable, List, Sequence
 
 from .data_contracts import WatchEvent
 from . import features
+=======
+import os
+import pandas as pd
+from .utils import path_proc
 
+def prepare_training_data(features_path = None):
+    """Return (X, y) with simple placeholders so the app runs end-to-end."""
+    if features_path is None:
+        features_path = path_proc("session_features.parquet")
+>>>>>>> Stashed changes
 
+    try:
+        df = pd.read_parquet(features_path)
+    except Exception:
+        df = pd.DataFrame()
+
+<<<<<<< Updated upstream
 @dataclass(frozen=True)
 class UserFeatures:
     """Aggregated engagement features for a user."""
@@ -40,8 +54,19 @@ class ChurnDataset:
 
     def is_empty(self) -> bool:
         return not self.features or not self.target
+=======
+    if df.empty:
+        # No data yet → harmless stubs
+        X = pd.DataFrame()
+        y = pd.Series(dtype=int)
+        return X, y
+>>>>>>> Stashed changes
 
+    # Use numeric session features as X
+    num = df.select_dtypes(include="number").copy()
+    X = num.fillna(0)
 
+<<<<<<< Updated upstream
 @dataclass(frozen=True)
 class RetentionPrediction:
     """Retention probability for a user."""
@@ -119,8 +144,38 @@ def create_user_features(
             mean_completion_ratio=mean_completion_ratio,
         )
     return features_by_user
+=======
+    # Dummy churn label: mark shortest 20% sessions as "churned" (placeholder)
+    if "session_duration_seconds" in df.columns and len(df) >= 5:
+        thresh = df["session_duration_seconds"].quantile(0.2)
+        y = (df["session_duration_seconds"] <= thresh).astype(int)
+    else:
+        y = pd.Series(0, index=X.index, dtype=int)
 
+    return X, y
 
+def train_churn_model(X: pd.DataFrame, y: pd.Series):
+    """Train a tiny logistic model; return None if not enough data."""
+    if X is None or X.empty or y is None or len(y) == 0:
+        return None
+    try:
+        from sklearn.linear_model import LogisticRegression
+        model = LogisticRegression(max_iter=250)
+        # Avoid single-class crash
+        if y.nunique() < 2:
+            return None
+        model.fit(X, y)
+        return model
+    except Exception:
+        return None
+>>>>>>> Stashed changes
+
+def main():
+    X, y = prepare_training_data()
+    m = train_churn_model(X, y)
+    print("[churn_model] trained:", m is not None)
+
+<<<<<<< Updated upstream
 def label_retention(events: Sequence[WatchEvent], horizon_days: int = 7) -> Dict[str, int]:
     """Label whether users return on or after the retention horizon."""
 
@@ -233,3 +288,7 @@ def predict_retention(model: LogisticRegressionModel, dataset: ChurnDataset) -> 
         RetentionPrediction(user_id=user, retention_probability=probability)
         for user, probability in zip(dataset.users, probabilities)
     ]
+=======
+if __name__ == "__main__":
+    main()
+>>>>>>> Stashed changes

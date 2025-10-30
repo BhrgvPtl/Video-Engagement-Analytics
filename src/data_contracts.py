@@ -1,6 +1,5 @@
-"""Data contracts and schema validation for engagement analytics datasets."""
-
 from __future__ import annotations
+<<<<<<< Updated upstream
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -12,11 +11,18 @@ import csv
 @dataclass(frozen=True)
 class WatchEvent:
     """Canonical schema for user-level watch events."""
+=======
+from dataclasses import dataclass
+from typing import Optional
+from datetime import datetime
+>>>>>>> Stashed changes
 
+@dataclass
+class WatchEvent:
     user_id: str
-    video_id: str
-    creator_id: str
+    session_id: str
     event_time: datetime
+<<<<<<< Updated upstream
     watched_seconds: float
     video_duration: float
 
@@ -37,11 +43,15 @@ class WatchEvent:
 class VideoMetadata:
     """Schema for static video descriptors sourced from YouTube metadata."""
 
+=======
+>>>>>>> Stashed changes
     video_id: str
-    creator_id: str
-    publish_time: datetime
-    category: str
+    watch_seconds: int
+    video_length_seconds: int
+    completed: bool
+    dropoff_position_pct: float  # 0..1
 
+<<<<<<< Updated upstream
     def __post_init__(self) -> None:
         if not self.video_id:
             raise ValueError("video_id must be provided")
@@ -131,3 +141,16 @@ def events_from_dicts(records: Sequence[dict[str, object]]) -> List[WatchEvent]:
         )
         for record in records
     ]
+=======
+@dataclass
+class SessionFeature:
+    session_id: str
+    user_id: str
+    session_start: datetime
+    session_end: datetime
+    session_duration_seconds: int
+    videos_watched: int
+    avg_watch_pct: float
+    completion_rate: float
+    creator_watch_share_top: Optional[str] = None  # optional enrichment
+>>>>>>> Stashed changes
