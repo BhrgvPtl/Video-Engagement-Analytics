@@ -1,27 +1,58 @@
 from __future__ import annotations
-import os
+from typing import Dict
 import pandas as pd
-from .utils import path_raw, path_proc
 
-def main():
-    src_csv = path_raw("USvideos.csv")
-    if not os.path.exists(src_csv):
-        print(f"[ingest] {src_csv} not found. Place the Kaggle CSV there.")
-        return
 
-    df = pd.read_csv(src_csv, low_memory=False)
+def retention_rates(events: pd.DataFrame) -> Dict[str, float]:
+    """
+    Compute D1/D7/D30 retention using first-seen cohorts.
+    Uses explicit day-delta ints (avoids Series+Timedelta checker issues).
+    """
+    if events is None or events.empty:
+        return {"d1": 0.0, "d7": 0.0, "d30": 0.0}
 
-    keep = [c for c in [
-        "video_id","title","channel_title","category_id",
-        "publish_time","views","likes","comment_count"
-    ] if c in df.columns]
-    if not keep:
-        print("[ingest] no expected columns found; check CSV.")
-        return
+    ev = events.copy()
+    ev["event_time"] = pd.to_datetime(ev["event_time"], errors="coerce", utc=True)
+    ev["day"] = ev["event_time"].dt.floor("D")
 
-    out_min = path_proc("videos_clean_min.parquet")
-    df[keep].to_parquet(out_min, index=False)
-    print(f"[ingest] wrote {out_min} ({len(df):,} rows)")
+    # First day per user
+    first_day_df = (
+        ev.groupby("user_id", as_index=False)
+          .agg(first_day=("day", "min"))
+    )
+    ev = ev.merge(first_day_df, on="user_id", how="left")
 
-if __name__ == "__main__":
-    main()
+    # Integer day difference from first_seen
+    ev["day_delta"] = (ev["day"] - ev["first_day"]).dt.days
+
+    out: Dict[str, float] = {}
+    for label, delta in (("d1", 1), ("d7", 7), ("d30", 30)):
+        # user retained if they have any event with that exact day_delta
+        retained_flags = (
+            ev.groupby("user_id")["day_delta"]
+              .apply(lambda s: bool((s == delta).any()))
+        )
+        out[label] = float(retained_flags.mean()) if len(retained_flags) else 0.0
+
+    return out
+
+
+def rolling_active_users(events: pd.DataFrame, window_days: int) -> int:
+    """
+    Distinct users in the last N days based on max event_time present.
+    """
+    if events is None or events.empty:
+        return 0
+
+    ev = events.copy()
+    ev["event_time"] = pd.to_datetime(ev["event_time"], errors="coerce", utc=True)
+
+    max_ts = ev["event_time"].max()
+    if pd.isna(max_ts):
+        return 0
+
+    window_start = max_ts - pd.Timedelta(days=int(window_days))
+    mask: pd.Series = (ev["event_time"] >= window_start) & (ev["event_time"] <= max_ts)
+
+    users_in_window: pd.Series = ev.loc[mask, "user_id"].astype(object)
+    return int(users_in_window.nunique())
